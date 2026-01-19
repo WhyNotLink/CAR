@@ -1,6 +1,8 @@
 import socket
 import threading
 import time
+import cv2
+import struct
 
 from motor import CarMotor
 from joystick import joystick_to_speed
@@ -15,6 +17,92 @@ running = True
 lock = threading.Lock()
 conn = None
 server = None  
+
+# ======== 自动模式视频发送配置 ========
+ECS_IP = "47.105.118.110"
+ECS_PORT = 8088
+cap = None
+client_socket = None
+FPS = 10
+frame_interval = 1.0 / FPS
+
+# def init_camera_and_socket():
+#     global cap, client_socket
+#     cap = cv2.VideoCapture(0)
+#     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+#     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+
+#     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+#     client_socket.connect((ECS_IP, ECS_PORT))
+
+# def send_frame_to_ecs():
+#     global cap, client_socket
+#     if cap is None or client_socket is None:
+#         return
+#     ret, frame = cap.read()
+#     if not ret:
+#         print("摄像头读取失败")
+#         return
+#     _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
+#     frame_bytes = buffer.tobytes()
+#     timestamp = time.time()
+#     header = struct.pack("dI", timestamp, len(frame_bytes))
+#     try:
+#         client_socket.sendall(header + frame_bytes)
+#     except:
+#         print("发送失败")
+#         # 发送失败不影响主程序
+#         # pass
+
+
+# ============================================
+def ecs_sender_worker():
+    global cap, client_socket, running, mode
+    while running:
+        if mode != "auto":
+            time.sleep(0.05)  
+            continue
+
+        # 初始化摄像头和socket
+        if cap is None:
+            cap = cv2.VideoCapture(0)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+
+        if client_socket is None:
+            try:
+                client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                client_socket.settimeout(5)
+                client_socket.connect((ECS_IP, ECS_PORT))
+                print("ECS 连接成功")
+            except Exception as e:
+                print("ECS 连接失败:", e)
+                client_socket = None
+                time.sleep(1)
+                continue
+
+        # 读取摄像头
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            print("摄像头读取失败")
+            time.sleep(frame_interval)
+            continue
+
+        # 编码发送
+        _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
+        frame_bytes = buffer.tobytes()
+        timestamp = time.time()
+        header = struct.pack("dI", timestamp, len(frame_bytes))
+        try:
+            client_socket.sendall(header + frame_bytes)
+            # print(f"发送帧大小: {len(frame_bytes)} bytes")
+        except Exception as e:
+            print("发送 ECS 失败:", e)
+            try: client_socket.close()
+            except: pass
+            client_socket = None
+
+        time.sleep(frame_interval)
 
 
 def socket_worker():
@@ -44,7 +132,7 @@ def socket_worker():
                         break
 
                     msg = line.strip()
-                    print("RX:", msg)
+                    # print("RX:", msg)
 
                     with lock:
                         last_recv_time = time.time()
@@ -105,6 +193,10 @@ def main():
     t = threading.Thread(target=socket_worker, daemon=True)
     t.start()
 
+    threading.Thread(target=ecs_sender_worker, daemon=True).start()
+
+    # init_camera_and_socket()
+
     try:
         while True:
             with lock:
@@ -120,7 +212,8 @@ def main():
 
             # ========= 自动模式 =========
             if current_mode == "auto":
-                motor.stop()   # 以后自动控制逻辑放这里
+                motor.stop()   
+                # send_frame_to_ecs()
 
             # ========= 手动模式 =========
             elif current_mode == "manual":
