@@ -10,7 +10,8 @@ from mediapipe.tasks.python import vision
 
 from flask import Flask, Response
 gesture_text = ""  # 用于网页叠加手势文字
-
+gesture = "NO_HAND"
+last_sent_gesture = "NO_HAND"
 
 HOST = "0.0.0.0"
 PORT = 8088
@@ -38,7 +39,7 @@ latest_ts = 0
 frame_lock = threading.Lock()
 
 def handle_client(conn, addr):
-    global latest_frame, latest_ts
+    global latest_frame, latest_ts, gesture, last_sent_gesture
     print(f"小车已连接: {addr}")
     payload_size = struct.calcsize("dI")  # timestamp(double) + length(uint32)
     data = b""
@@ -69,12 +70,20 @@ def handle_client(conn, addr):
                 latest_frame = frame
                 latest_ts = ts
 
+                # if(gesture != last_sent_gesture):
+                #     last_sent_gesture = gesture
+                #     gesture_bytes = gesture.encode("utf-8")
+                #     gesture_header = struct.pack("I", len(gesture_bytes))
+                #     conn.sendall(gesture_header + gesture_bytes)
+                #     print(f"发送手势: {gesture}")
+                
+
     except (ConnectionResetError, BrokenPipeError):
         print("小车断开连接")
         conn.close()
 
 def process_frames():
-    global latest_frame, latest_ts
+    global latest_frame, latest_ts, gesture, last_sent_gesture
     while True:
         with frame_lock:
             if latest_frame is None:
@@ -88,7 +97,8 @@ def process_frames():
         # Mediapipe 手势识别
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-        gesture = "NO_HAND"
+        
+        gesture = "NO_HAND" 
         if result.hand_landmarks:
             hand = result.hand_landmarks[0]
 
@@ -117,7 +127,17 @@ def process_frames():
         # 只打印非 NO_HAND
         if gesture != "NO_HAND":
             print(f"延迟: {latency:.0f} ms | 手势: {gesture}")
-
+        
+            if gesture != last_sent_gesture:
+                last_sent_gesture = gesture
+                if conn:
+                    try:
+                        gesture_bytes = gesture.encode("utf-8")
+                        gesture_header = struct.pack("I", len(gesture_bytes))
+                        conn.sendall(gesture_header + gesture_bytes)
+                        print(f"发送手势: {gesture}")
+                    except:
+                        pass
 
 
 # # ================== Flask MJPEG Web ==================

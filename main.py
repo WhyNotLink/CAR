@@ -26,6 +26,18 @@ client_socket = None
 FPS = 10
 frame_interval = 1.0 / FPS
 
+
+motor = CarMotor(
+    config.LEFT_FORWARD,
+    config.LEFT_BACKWARD,
+    config.LEFT_PWM,
+    config.RIGHT_FORWARD,
+    config.RIGHT_BACKWARD,
+    config.RIGHT_PWM
+)
+
+auto_left=0
+auto_right=0
 # def init_camera_and_socket():
 #     global cap, client_socket
 #     cap = cv2.VideoCapture(0)
@@ -178,22 +190,61 @@ def socket_worker():
                 time.sleep(1) 
 
 
-def main():
-    global running, server
 
-    motor = CarMotor(
-        config.LEFT_FORWARD,
-        config.LEFT_BACKWARD,
-        config.LEFT_PWM,
-        config.RIGHT_FORWARD,
-        config.RIGHT_BACKWARD,
-        config.RIGHT_PWM
-    )
+def ecs_receiver_worker():
+    global client_socket, running, mode, motor, auto_left, auto_right
+
+    while running:
+        if client_socket is None:
+            time.sleep(0.1)
+            continue
+
+        try:
+            # 读取 ECS 发来的消息（先读取长度再读取内容）
+            header = client_socket.recv(4)
+            if not header or len(header) < 4:
+                time.sleep(0.05)
+                continue
+
+            length = struct.unpack("I", header)[0]
+            data = b""
+            while len(data) < length:
+                packet = client_socket.recv(length - len(data))
+                if not packet:
+                    break
+                data += packet
+
+            msg = data.decode("utf-8")
+            print(f"ECS消息: {msg}")
+
+            # ======== 根据 ECS 手势控制小车 =========
+            with lock:
+                if mode == "auto":
+                    if msg == "FIST":
+                        # 停车
+                        print("停车")
+                        motor.stop()                
+                    elif msg == "OPEN":
+                        print("前进")
+                        motor.set_speed(0.3,0.3)    
+                        # 前进
+                   
+
+        except Exception as e:
+            # ECS 断开或异常
+            # print("接收 ECS 失败:", e)
+            time.sleep(0.1)
+
+
+def main():
+    global running, server, motor, auto_left, auto_right
+
 
     t = threading.Thread(target=socket_worker, daemon=True)
     t.start()
 
     threading.Thread(target=ecs_sender_worker, daemon=True).start()
+    threading.Thread(target=ecs_receiver_worker, daemon=True).start()
 
     # init_camera_and_socket()
 
@@ -206,19 +257,31 @@ def main():
                 last_time = last_recv_time
 
             # ========= 掉线保护 =========
-            if time.time() - last_time > config.TIMEOUT_STOP:
+            # if time.time() - last_time > config.TIMEOUT_STOP:
+            #     motor.stop()
+            #     continue
+
+            with lock:
+                current_mode = mode
+                conn_alive = conn is not None        # 手机连接
+                ecs_alive = client_socket is not None  # ECS连接
+            
+            if current_mode == "auto" and (not ecs_alive):
+                print("掉线保护触发：ECS 未连接，停车")
                 motor.stop()
                 continue
 
             # ========= 自动模式 =========
             if current_mode == "auto":
-                motor.stop()   
+                pass
+                # motor.stop()   
                 # send_frame_to_ecs()
 
-            # ========= 手动模式 =========
+            # ========= 手动模式 ======
             elif current_mode == "manual":
-                left, right = joystick_to_speed(a, s, config.MAX_POWER)
-                motor.set_speed(left, right)
+                with lock:
+                    left, right = joystick_to_speed(a, s, config.MAX_POWER)
+                    motor.set_speed(left, right)
 
             time.sleep(1 / config.CONTROL_HZ)
 
