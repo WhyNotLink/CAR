@@ -8,6 +8,8 @@ from motor import CarMotor
 from joystick import joystick_to_speed
 import config
 
+from tripod import get_distance, turn_left_90
+
 # ===== 全局变量 =====
 angle = 0
 strength = 0
@@ -19,6 +21,7 @@ conn = None
 server = None
 cap = None
 client_socket = None
+ult_flag = False
 
 FPS = 10
 frame_interval = 1.0 / FPS
@@ -86,7 +89,8 @@ def socket_worker():
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(('', config.SERVER_PORT))
     server.listen(1)
-
+    server.settimeout(1.0)
+    
     while running:
         try:
             conn, addr = server.accept()
@@ -125,7 +129,7 @@ def socket_worker():
 
 # ===== ECS 手势控制线程 =====
 def ecs_receiver_worker():
-    global client_socket, running, mode, motor
+    global client_socket, running, mode, motor, ult_flag
     while running:
         if client_socket is None:
             time.sleep(0.1)
@@ -150,9 +154,11 @@ def ecs_receiver_worker():
                 if mode == "auto":
                     if msg == "FIST":
                         print("停车")
+                        ult_flag = False
                         motor.stop()
                     elif msg == "OPEN":
                         print("前进")
+                        ult_flag = True
                         motor.set_speed(0.3, 0.3)
 
         except:
@@ -181,6 +187,12 @@ def main():
                 motor.stop()
                 time.sleep(1 / config.CONTROL_HZ)
                 continue
+
+            if current_mode == "auto" and ult_flag == True:
+                dist = get_distance()
+                print(f"Distance: {dist:.2f} m")
+                if(dist<=0.2):
+                    turn_left_90(motor)
 
             if current_mode == "manual":
                 with lock:
